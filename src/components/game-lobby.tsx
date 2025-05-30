@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Slider } from "@/components/ui/slider"
 import { useAuth } from "./auth-context"
-import { Copy, Users, Settings, Crown, UserCheck, UserX, MessageSquare, Send } from "lucide-react"
+import { Copy, Users, Settings, Crown, MessageSquare, Send } from "lucide-react"
 
 interface GameLobbyProps {
   onGameStart: () => void
@@ -17,7 +17,6 @@ interface Player {
   id: string
   name: string
   isHost: boolean
-  isReady: boolean
   avatar?: string
 }
 
@@ -39,7 +38,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     maxPlayers: 8,
     isPrivate: false,
   })
-  const [isReady, setIsReady] = React.useState(false)
   const [isHost, setIsHost] = React.useState(false)
   const [showSettings, setShowSettings] = React.useState(false)
   const [isLoading, setIsLoading] = React.useState(false)
@@ -47,9 +45,14 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   const [chatMessage, setChatMessage] = React.useState("")
   const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([])
   const [ws, setWs] = React.useState<WebSocket | null>(null)
-  const [connectionStatus, setConnectionStatus] = React.useState<"connecting" | "connected" | "disconnected">(
-    "connecting",
-  )
+  const chatContainerRef = React.useRef<HTMLDivElement>(null)
+
+  // Автопрокрутка чата
+  React.useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
+    }
+  }, [chatMessages])
 
   // Подключение к WebSocket
   React.useEffect(() => {
@@ -75,7 +78,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
       websocket.onopen = () => {
         console.log("WebSocket подключен")
-        setConnectionStatus("connected")
         setWs(websocket)
 
         // Присоединяемся к комнате после подключения
@@ -106,24 +108,19 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
       websocket.onclose = () => {
         console.log("WebSocket отключен")
-        setConnectionStatus("disconnected")
         setWs(null)
 
         // Переподключение через 3 секунды
         setTimeout(() => {
-          if (connectionStatus !== "connected") {
-            connectWebSocket()
-          }
+          connectWebSocket()
         }, 3000)
       }
 
       websocket.onerror = (error) => {
         console.error("WebSocket ошибка:", error)
-        setConnectionStatus("disconnected")
       }
     } catch (error) {
       console.error("Ошибка подключения WebSocket:", error)
-      setConnectionStatus("disconnected")
     }
   }
 
@@ -138,6 +135,9 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         if (message.data.roomInfo) {
           setRoomInfo((prev) => ({ ...prev, ...message.data.roomInfo }))
         }
+        if (message.data.chatMessages) {
+          setChatMessages(message.data.chatMessages)
+        }
         break
 
       case "playerJoined":
@@ -150,13 +150,9 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         addSystemMessage(`Игрок покинул игру`)
         break
 
-      case "playerReady":
-        updatePlayerReady(message.data.playerId, message.data.isReady)
-        break
-
       case "chatMessage":
         addChatMessage({
-          id: Date.now().toString(),
+          id: message.data.id || Date.now().toString(),
           sender: message.data.sender,
           message: message.data.message,
           timestamp: message.data.timestamp,
@@ -198,7 +194,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         id: playerId,
         name: playerName,
         isHost: hostStatus,
-        isReady: hostStatus, // Хост всегда готов
       }
 
       setPlayers([currentPlayer])
@@ -225,17 +220,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     setPlayers((prev) => prev.filter((p) => p.id !== playerId))
   }
 
-  const updatePlayerReady = (playerId: string, isReady: boolean) => {
-    setPlayers((prev) =>
-      prev.map((player) => {
-        if (player.id === playerId) {
-          return { ...player, isReady }
-        }
-        return player
-      }),
-    )
-  }
-
   const addChatMessage = (message: ChatMessage) => {
     setChatMessages((prev) => [...prev, message])
   }
@@ -250,34 +234,10 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     })
   }
 
-  const handleToggleReady = () => {
-    const newReadyState = !isReady
-    setIsReady(newReadyState)
-
-    // Отправляем сообщение через WebSocket
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({
-          type: "playerReady",
-          roomId: roomInfo.id,
-          playerId: localStorage.getItem("mafia_player_id"),
-          isReady: newReadyState,
-        }),
-      )
-    }
-
-    // Обновляем локально
-    const playerId = localStorage.getItem("mafia_player_id")
-    if (playerId) {
-      updatePlayerReady(playerId, newReadyState)
-    }
-  }
-
   const handleStartGame = () => {
     if (!isHost) return
 
-    const readyPlayers = players.filter((p) => p.isReady || p.isHost)
-    if (readyPlayers.length < roomInfo.minPlayers) {
+    if (players.length < roomInfo.minPlayers) {
       setError(`Недостаточно игроков. Минимум: ${roomInfo.minPlayers}`)
       return
     }
@@ -332,15 +292,11 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     addSystemMessage("Код комнаты скопирован в буфер обмена")
   }
 
-  const canStartGame = () => {
-    const readyPlayers = players.filter((p) => p.isReady || p.isHost)
-    return isHost && readyPlayers.length >= roomInfo.minPlayers && players.length >= roomInfo.minPlayers
-  }
-
   const handleSendMessage = () => {
     if (!chatMessage.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
 
     const playerName = localStorage.getItem("mafia_player_name") || "Игрок"
+    const messageId = Date.now().toString()
 
     // Отправляем сообщение через WebSocket
     ws.send(
@@ -349,6 +305,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         roomId: roomInfo.id,
         playerId: localStorage.getItem("mafia_player_id"),
         data: {
+          id: messageId,
           sender: playerName,
           message: chatMessage,
           timestamp: Date.now(),
@@ -358,7 +315,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
     // Добавляем сообщение локально
     addChatMessage({
-      id: Date.now().toString(),
+      id: messageId,
       sender: playerName,
       message: chatMessage,
       timestamp: Date.now(),
@@ -396,7 +353,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
               </Button>
             </div>
 
-            {/* Статус игроков и подключения */}
+            {/* Статус игроков */}
             <div className="flex items-center justify-center gap-4 text-sm text-gray-300">
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
@@ -404,27 +361,13 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                   {players.length}/{roomInfo.maxPlayers} игроков
                 </span>
               </div>
-              <div className="flex items-center gap-1">
-                <UserCheck className="w-4 h-4" />
-                <span>{players.filter((p) => p.isReady || p.isHost).length} готовы</span>
-              </div>
-              <Badge
-                variant={connectionStatus === "connected" ? "default" : "destructive"}
-                className={connectionStatus === "connected" ? "bg-green-600" : "bg-red-600"}
-              >
-                {connectionStatus === "connected"
-                  ? "Онлайн"
-                  : connectionStatus === "connecting"
-                    ? "Подключение..."
-                    : "Оффлайн"}
-              </Badge>
             </div>
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Список игроков */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-1">
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
               <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
                 <Users className="w-5 h-5" />
@@ -449,20 +392,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                         <span className="text-sm text-gray-400">{player.isHost ? "Хост" : "Игрок"}</span>
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      {player.isReady || player.isHost ? (
-                        <Badge variant="default" className="bg-green-600">
-                          <UserCheck className="w-3 h-3 mr-1" />
-                          Готов
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">
-                          <UserX className="w-3 h-3 mr-1" />
-                          Не готов
-                        </Badge>
-                      )}
-                    </div>
                   </div>
                 ))}
 
@@ -482,85 +411,17 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 ))}
               </div>
             </Card>
-          </div>
 
-          {/* Чат */}
-          <div className="lg:col-span-1">
-            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 h-full">
-              <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                <MessageSquare className="w-5 h-5" />
-                Чат
-              </h2>
-
-              <div className="flex flex-col h-96">
-                {/* Сообщения */}
-                <div className="flex-1 overflow-y-auto mb-4 p-3 bg-gray-900/30 rounded-lg border border-gray-700">
-                  {chatMessages.length === 0 ? (
-                    <div className="text-gray-500 text-center py-4 text-sm">Сообщений пока нет</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {chatMessages.map((msg) => (
-                        <div key={msg.id} className="text-sm">
-                          {msg.type === "system" ? (
-                            <p className="text-gray-400 italic text-xs">{msg.message}</p>
-                          ) : (
-                            <div>
-                              <span className="font-bold text-white text-xs">{msg.sender}: </span>
-                              <span className="text-gray-300 text-xs">{msg.message}</span>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Поле ввода */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={chatMessage}
-                    onChange={(e) => setChatMessage(e.target.value)}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Сообщение..."
-                    disabled={connectionStatus !== "connected"}
-                    className="flex-1 bg-gray-900/30 text-white placeholder:text-gray-500 rounded-lg border border-gray-700 px-3 py-2 text-sm"
-                  />
-                  <Button
-                    onClick={handleSendMessage}
-                    size="sm"
-                    disabled={!chatMessage.trim() || connectionStatus !== "connected"}
-                  >
-                    <Send className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          </div>
-
-          {/* Панель управления */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* Кнопки действий */}
-            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
+            {/* Панель управления */}
+            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 mt-6">
               <h3 className="text-lg font-bold text-white mb-4">Действия</h3>
 
               <div className="space-y-3">
-                {!isHost && (
-                  <Button
-                    onClick={handleToggleReady}
-                    variant={isReady ? "default" : "outline"}
-                    className="w-full"
-                    disabled={connectionStatus !== "connected"}
-                  >
-                    {isReady ? "Отменить готовность" : "Готов к игре"}
-                  </Button>
-                )}
-
                 {isHost && (
                   <>
                     <Button
                       onClick={handleStartGame}
-                      disabled={!canStartGame() || isLoading || connectionStatus !== "connected"}
+                      disabled={players.length < roomInfo.minPlayers || isLoading}
                       variant="destructive"
                       className="w-full"
                     >
@@ -582,7 +443,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
             {/* Настройки (только для хоста) */}
             {isHost && showSettings && (
-              <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
+              <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 mt-6">
                 <h3 className="text-lg font-bold text-white mb-4">Настройки игры</h3>
 
                 <div className="space-y-4">
@@ -614,29 +475,56 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 </div>
               </Card>
             )}
+          </div>
 
-            {/* Информация о игре */}
-            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
-              <h3 className="text-lg font-bold text-white mb-4">Информация</h3>
+          {/* Чат */}
+          <div className="lg:col-span-2">
+            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 h-full">
+              <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5" />
+                Чат лобби
+              </h2>
 
-              <div className="space-y-2 text-sm text-gray-300">
-                <div className="flex justify-between">
-                  <span>Минимум игроков:</span>
-                  <span>{roomInfo.minPlayers}</span>
+              <div className="flex flex-col h-[500px]">
+                {/* Сообщения */}
+                <div
+                  ref={chatContainerRef}
+                  className="flex-1 overflow-y-auto mb-4 p-3 bg-gray-900/30 rounded-lg border border-gray-700"
+                >
+                  {chatMessages.length === 0 ? (
+                    <div className="text-gray-500 text-center py-4">Сообщений пока нет</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {chatMessages.map((msg) => (
+                        <div key={msg.id} className="text-sm">
+                          {msg.type === "system" ? (
+                            <p className="text-gray-400 italic">{msg.message}</p>
+                          ) : (
+                            <div>
+                              <span className="font-bold text-white">{msg.sender}: </span>
+                              <span className="text-gray-300">{msg.message}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="flex justify-between">
-                  <span>Максимум игроков:</span>
-                  <span>{roomInfo.maxPlayers}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Тип комнаты:</span>
-                  <span>{roomInfo.isPrivate ? "Приватная" : "Публичная"}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Статус:</span>
-                  <span className={connectionStatus === "connected" ? "text-green-400" : "text-red-400"}>
-                    {connectionStatus === "connected" ? "Подключено" : "Отключено"}
-                  </span>
+
+                {/* Поле ввода */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Введите сообщение..."
+                    className="flex-1 bg-gray-900/30 text-white placeholder:text-gray-500 rounded-lg border border-gray-700 px-3 py-2"
+                  />
+                  <Button onClick={handleSendMessage} disabled={!chatMessage.trim()}>
+                    <Send className="w-4 h-4 mr-2" />
+                    Отправить
+                  </Button>
                 </div>
               </div>
             </Card>

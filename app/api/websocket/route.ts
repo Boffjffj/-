@@ -23,7 +23,6 @@ interface Player {
   isAlive: boolean
   isBot: boolean
   isHost: boolean
-  isReady: boolean
   ws?: WebSocket
 }
 
@@ -36,12 +35,11 @@ interface ChatMessage {
 }
 
 interface GameMessage {
-  type: "joinRoom" | "leaveRoom" | "playerReady" | "startGame" | "chatMessage" | "getRoomState"
+  type: "joinRoom" | "leaveRoom" | "startGame" | "chatMessage" | "getRoomState"
   roomId?: string
   playerId?: string
   playerName?: string
   data?: any
-  isReady?: boolean
 }
 
 class GameServer {
@@ -101,14 +99,13 @@ class GameServer {
       return false
     }
 
-    const isHost = room.players.size === 0
+    const isHost = room.players.size === 0 || playerId === room.hostId
     const player: Player = {
       id: playerId,
       name: playerName,
       isAlive: true,
       isBot: false,
       isHost,
-      isReady: isHost, // Хост всегда готов
       ws,
     }
 
@@ -186,41 +183,12 @@ class GameServer {
     }
   }
 
-  updatePlayerReady(roomId: string, playerId: string, isReady: boolean) {
-    const room = this.rooms.get(roomId)
-    if (!room) return
-
-    const player = room.players.get(playerId)
-    if (!player) return
-
-    player.isReady = isReady
-    console.log(`Игрок ${player.name} в комнате ${roomId}: готовность = ${isReady}`)
-
-    // Уведомляем всех в комнате
-    this.broadcastToRoom(roomId, {
-      type: "playerReady",
-      data: { playerId, isReady },
-    })
-
-    // Добавляем системное сообщение
-    const systemMessage: ChatMessage = {
-      id: Date.now().toString(),
-      sender: "Система",
-      message: `${player.name} ${isReady ? "готов к игре" : "отменил готовность"}`,
-      timestamp: Date.now(),
-      type: "system",
-    }
-    room.chatMessages.push(systemMessage)
-
-    this.broadcastRoomState(roomId)
-  }
-
-  addChatMessage(roomId: string, sender: string, message: string) {
+  addChatMessage(roomId: string, sender: string, message: string, messageId: string) {
     const room = this.rooms.get(roomId)
     if (!room) return
 
     const chatMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: messageId,
       sender,
       message,
       timestamp: Date.now(),
@@ -241,8 +209,7 @@ class GameServer {
     const room = this.rooms.get(roomId)
     if (!room || room.hostId !== hostId) return
 
-    const readyPlayers = Array.from(room.players.values()).filter((p) => p.isReady || p.isHost)
-    if (readyPlayers.length < room.minPlayers) return
+    if (room.players.size < room.minPlayers) return
 
     room.status = "playing"
     console.log(`Игра в комнате ${roomId} началась`)
@@ -250,7 +217,7 @@ class GameServer {
     // Уведомляем всех о начале игры
     this.broadcastToRoom(roomId, {
       type: "gameStarted",
-      data: { players: readyPlayers.map((p) => this.playerToJSON(p)) },
+      data: { players: Array.from(room.players.values()).map((p) => this.playerToJSON(p)) },
     })
   }
 
@@ -306,7 +273,6 @@ class GameServer {
       id: player.id,
       name: player.name,
       isHost: player.isHost,
-      isReady: player.isReady,
       isAlive: player.isAlive,
       role: player.role,
     }
@@ -381,15 +347,14 @@ class GameServer {
         }
         break
 
-      case "playerReady":
-        if (message.roomId && message.playerId && typeof message.isReady === "boolean") {
-          this.updatePlayerReady(message.roomId, message.playerId, message.isReady)
-        }
-        break
-
       case "chatMessage":
         if (message.roomId && message.data?.sender && message.data?.message) {
-          this.addChatMessage(message.roomId, message.data.sender, message.data.message)
+          this.addChatMessage(
+            message.roomId,
+            message.data.sender,
+            message.data.message,
+            message.data.id || Date.now().toString(),
+          )
         }
         break
 
