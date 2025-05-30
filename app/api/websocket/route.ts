@@ -7,11 +7,13 @@ interface GameRoom {
   hostId: string
   players: Map<string, Player>
   maxPlayers: number
+  minPlayers: number
   isPrivate: boolean
   password?: string
   status: "waiting" | "playing" | "finished"
   gameState?: any
   lastUpdate: number
+  chatMessages: ChatMessage[]
 }
 
 interface Player {
@@ -21,14 +23,25 @@ interface Player {
   isAlive: boolean
   isBot: boolean
   isHost: boolean
+  isReady: boolean
   ws?: WebSocket
 }
 
+interface ChatMessage {
+  id: string
+  sender: string
+  message: string
+  timestamp: number
+  type: "user" | "system"
+}
+
 interface GameMessage {
-  type: "join" | "leave" | "create" | "gameState" | "chat" | "error" | "roomList"
-  data?: any
+  type: "joinRoom" | "leaveRoom" | "playerReady" | "startGame" | "chatMessage" | "getRoomState"
   roomId?: string
   playerId?: string
+  playerName?: string
+  data?: any
+  isReady?: boolean
 }
 
 class GameServer {
@@ -43,7 +56,14 @@ class GameServer {
     return Math.random().toString(36).substring(2, 15)
   }
 
-  createRoom(name: string, maxPlayers: number, isPrivate: boolean, password?: string, hostId?: string): string {
+  createRoom(
+    name: string,
+    maxPlayers: number,
+    minPlayers: number,
+    isPrivate: boolean,
+    password?: string,
+    hostId?: string,
+  ): string {
     const roomId = this.generateRoomId()
     const room: GameRoom = {
       id: roomId,
@@ -51,40 +71,70 @@ class GameServer {
       hostId: hostId || this.generatePlayerId(),
       players: new Map(),
       maxPlayers,
+      minPlayers,
       isPrivate,
       password,
       status: "waiting",
       lastUpdate: Date.now(),
+      chatMessages: [],
     }
 
     this.rooms.set(roomId, room)
+    console.log(`Создана комната ${roomId}: ${name}`)
     return roomId
   }
 
   joinRoom(roomId: string, playerId: string, playerName: string, ws: WebSocket, password?: string): boolean {
     const room = this.rooms.get(roomId)
-    if (!room) return false
+    if (!room) {
+      console.log(`Комната ${roomId} не найдена`)
+      return false
+    }
 
-    if (room.isPrivate && room.password !== password) return false
-    if (room.players.size >= room.maxPlayers) return false
+    if (room.isPrivate && room.password !== password) {
+      console.log(`Неверный пароль для комнаты ${roomId}`)
+      return false
+    }
 
+    if (room.players.size >= room.maxPlayers) {
+      console.log(`Комната ${roomId} переполнена`)
+      return false
+    }
+
+    const isHost = room.players.size === 0
     const player: Player = {
       id: playerId,
       name: playerName,
       isAlive: true,
       isBot: false,
-      isHost: room.players.size === 0,
+      isHost,
+      isReady: isHost, // Хост всегда готов
       ws,
     }
 
     room.players.set(playerId, player)
     this.connections.set(ws, { playerId, roomId })
 
+    console.log(`Игрок ${playerName} присоединился к комнате ${roomId}`)
+
+    // Добавляем системное сообщение
+    const systemMessage: ChatMessage = {
+      id: Date.now().toString(),
+      sender: "Система",
+      message: `${playerName} присоединился к игре`,
+      timestamp: Date.now(),
+      type: "system",
+    }
+    room.chatMessages.push(systemMessage)
+
     // Уведомляем всех в комнате о новом игроке
     this.broadcastToRoom(roomId, {
-      type: "gameState",
-      data: { players: Array.from(room.players.values()) },
+      type: "playerJoined",
+      data: { player: this.playerToJSON(player) },
     })
+
+    // Отправляем текущее состояние комнаты новому игроку
+    this.sendRoomState(ws, roomId)
 
     return true
   }
@@ -95,44 +145,152 @@ class GameServer {
     const room = this.rooms.get(roomId)
     if (!room) return
 
+    const player = room.players.get(playerId)
     room.players.delete(playerId)
+
+    console.log(`Игрок ${player?.name || playerId} покинул комнату ${roomId}`)
 
     // Если комната пустая, удаляем её
     if (room.players.size === 0) {
       this.rooms.delete(roomId)
+      console.log(`Комната ${roomId} удалена (пустая)`)
     } else {
       // Если хост ушел, назначаем нового
-      const player = room.players.get(playerId)
       if (player?.isHost) {
         const newHost = Array.from(room.players.values())[0]
         if (newHost) {
           newHost.isHost = true
           room.hostId = newHost.id
+          console.log(`Новый хост комнаты ${roomId}: ${newHost.name}`)
         }
       }
 
+      // Добавляем системное сообщение
+      const systemMessage: ChatMessage = {
+        id: Date.now().toString(),
+        sender: "Система",
+        message: `${player?.name || "Игрок"} покинул игру`,
+        timestamp: Date.now(),
+        type: "system",
+      }
+      room.chatMessages.push(systemMessage)
+
       // Уведомляем остальных
       this.broadcastToRoom(roomId, {
-        type: "gameState",
-        data: { players: Array.from(room.players.values()) },
+        type: "playerLeft",
+        data: { playerId },
       })
+
+      // Отправляем обновленное состояние
+      this.broadcastRoomState(roomId)
     }
   }
 
-  updateGameState(roomId: string, gameState: any) {
+  updatePlayerReady(roomId: string, playerId: string, isReady: boolean) {
     const room = this.rooms.get(roomId)
     if (!room) return
 
-    room.gameState = gameState
-    room.lastUpdate = Date.now()
+    const player = room.players.get(playerId)
+    if (!player) return
 
+    player.isReady = isReady
+    console.log(`Игрок ${player.name} в комнате ${roomId}: готовность = ${isReady}`)
+
+    // Уведомляем всех в комнате
     this.broadcastToRoom(roomId, {
-      type: "gameState",
-      data: gameState,
+      type: "playerReady",
+      data: { playerId, isReady },
+    })
+
+    // Добавляем системное сообщение
+    const systemMessage: ChatMessage = {
+      id: Date.now().toString(),
+      sender: "Система",
+      message: `${player.name} ${isReady ? "готов к игре" : "отменил готовность"}`,
+      timestamp: Date.now(),
+      type: "system",
+    }
+    room.chatMessages.push(systemMessage)
+
+    this.broadcastRoomState(roomId)
+  }
+
+  addChatMessage(roomId: string, sender: string, message: string) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    const chatMessage: ChatMessage = {
+      id: Date.now().toString(),
+      sender,
+      message,
+      timestamp: Date.now(),
+      type: "user",
+    }
+
+    room.chatMessages.push(chatMessage)
+    console.log(`Сообщение в комнате ${roomId} от ${sender}: ${message}`)
+
+    // Рассылаем сообщение всем в комнате
+    this.broadcastToRoom(roomId, {
+      type: "chatMessage",
+      data: chatMessage,
     })
   }
 
-  broadcastToRoom(roomId: string, message: GameMessage) {
+  startGame(roomId: string, hostId: string) {
+    const room = this.rooms.get(roomId)
+    if (!room || room.hostId !== hostId) return
+
+    const readyPlayers = Array.from(room.players.values()).filter((p) => p.isReady || p.isHost)
+    if (readyPlayers.length < room.minPlayers) return
+
+    room.status = "playing"
+    console.log(`Игра в комнате ${roomId} началась`)
+
+    // Уведомляем всех о начале игры
+    this.broadcastToRoom(roomId, {
+      type: "gameStarted",
+      data: { players: readyPlayers.map((p) => this.playerToJSON(p)) },
+    })
+  }
+
+  sendRoomState(ws: WebSocket, roomId: string) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    const roomState = {
+      roomInfo: {
+        id: room.id,
+        name: room.name,
+        maxPlayers: room.maxPlayers,
+        minPlayers: room.minPlayers,
+        isPrivate: room.isPrivate,
+        status: room.status,
+      },
+      players: Array.from(room.players.values()).map((p) => this.playerToJSON(p)),
+      chatMessages: room.chatMessages,
+    }
+
+    ws.send(
+      JSON.stringify({
+        type: "roomState",
+        data: roomState,
+      }),
+    )
+  }
+
+  broadcastRoomState(roomId: string) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    room.players.forEach((player) => {
+      if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+        this.sendRoomState(player.ws, roomId)
+      }
+    })
+  }
+
+  broadcastToRoom(roomId: string, message: any) {
     const room = this.rooms.get(roomId)
     if (!room) return
 
@@ -143,71 +301,112 @@ class GameServer {
     })
   }
 
-  getRooms(): GameRoom[] {
+  playerToJSON(player: Player) {
+    return {
+      id: player.id,
+      name: player.name,
+      isHost: player.isHost,
+      isReady: player.isReady,
+      isAlive: player.isAlive,
+      role: player.role,
+    }
+  }
+
+  getRooms(): any[] {
     return Array.from(this.rooms.values())
       .filter((room) => !room.isPrivate && room.status === "waiting")
       .map((room) => ({
-        ...room,
-        players: new Map(), // Не отправляем полную информацию об игроках
+        id: room.id,
+        name: room.name,
+        players: room.players.size,
+        maxPlayers: room.maxPlayers,
+        minPlayers: room.minPlayers,
+        status: room.status,
       }))
   }
 
   handleConnection(ws: WebSocket) {
+    console.log("Новое WebSocket подключение")
+
     ws.on("message", (data: string) => {
       try {
         const message: GameMessage = JSON.parse(data)
         this.handleMessage(ws, message)
       } catch (error) {
-        console.error("Error parsing message:", error)
+        console.error("Ошибка парсинга сообщения:", error)
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            data: { message: "Ошибка парсинга сообщения" },
+          }),
+        )
       }
     })
 
     ws.on("close", () => {
+      console.log("WebSocket подключение закрыто")
       const connection = this.connections.get(ws)
       if (connection) {
         this.leaveRoom(connection.playerId, connection.roomId)
         this.connections.delete(ws)
       }
     })
+
+    ws.on("error", (error) => {
+      console.error("WebSocket ошибка:", error)
+    })
   }
 
   private handleMessage(ws: WebSocket, message: GameMessage) {
+    console.log("Получено сообщение:", message.type, message)
+
     switch (message.type) {
-      case "create":
-        const roomId = this.createRoom(
-          message.data.name,
-          message.data.maxPlayers,
-          message.data.isPrivate,
-          message.data.password,
-          message.data.hostId,
-        )
-        ws.send(JSON.stringify({ type: "create", data: { roomId } }))
-        break
-
-      case "join":
-        const success = this.joinRoom(message.roomId!, message.playerId!, message.data.name, ws, message.data.password)
-        ws.send(
-          JSON.stringify({
-            type: "join",
-            data: { success, roomId: message.roomId },
-          }),
-        )
-        break
-
-      case "gameState":
-        if (message.roomId) {
-          this.updateGameState(message.roomId, message.data)
+      case "joinRoom":
+        if (message.roomId && message.playerId && message.playerName) {
+          const success = this.joinRoom(message.roomId, message.playerId, message.playerName, ws)
+          if (!success) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                data: { message: "Не удалось присоединиться к комнате" },
+              }),
+            )
+          }
         }
         break
 
-      case "roomList":
-        ws.send(
-          JSON.stringify({
-            type: "roomList",
-            data: this.getRooms(),
-          }),
-        )
+      case "leaveRoom":
+        if (message.roomId && message.playerId) {
+          this.leaveRoom(message.playerId, message.roomId)
+        }
         break
+
+      case "playerReady":
+        if (message.roomId && message.playerId && typeof message.isReady === "boolean") {
+          this.updatePlayerReady(message.roomId, message.playerId, message.isReady)
+        }
+        break
+
+      case "chatMessage":
+        if (message.roomId && message.data?.sender && message.data?.message) {
+          this.addChatMessage(message.roomId, message.data.sender, message.data.message)
+        }
+        break
+
+      case "startGame":
+        if (message.roomId && message.playerId) {
+          this.startGame(message.roomId, message.playerId)
+        }
+        break
+
+      case "getRoomState":
+        if (message.roomId) {
+          this.sendRoomState(ws, message.roomId)
+        }
+        break
+
+      default:
+        console.log("Неизвестный тип сообщения:", message.type)
     }
   }
 }

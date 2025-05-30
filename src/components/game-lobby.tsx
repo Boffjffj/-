@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Slider } from "@/components/ui/slider"
 import { useAuth } from "./auth-context"
-import { Copy, Users, Settings, Crown, UserCheck, UserX } from "lucide-react"
+import { Copy, Users, Settings, Crown, UserCheck, UserX, MessageSquare, Send } from "lucide-react"
 
 interface GameLobbyProps {
   onGameStart: () => void
@@ -19,6 +19,14 @@ interface Player {
   isHost: boolean
   isReady: boolean
   avatar?: string
+}
+
+interface ChatMessage {
+  id: string
+  sender: string
+  message: string
+  timestamp: number
+  type: "user" | "system"
 }
 
 const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
@@ -36,11 +44,135 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   const [showSettings, setShowSettings] = React.useState(false)
   const [isLoading, setIsLoading] = React.useState(false)
   const [error, setError] = React.useState("")
+  const [chatMessage, setChatMessage] = React.useState("")
+  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([])
+  const [ws, setWs] = React.useState<WebSocket | null>(null)
+  const [connectionStatus, setConnectionStatus] = React.useState<"connecting" | "connected" | "disconnected">(
+    "connecting",
+  )
 
-  // Загружаем данные комнаты при монтировании
+  // Подключение к WebSocket
   React.useEffect(() => {
+    connectWebSocket()
     loadRoomData()
+
+    return () => {
+      if (ws) {
+        ws.close()
+      }
+    }
   }, [])
+
+  const connectWebSocket = () => {
+    try {
+      // Используем правильный WebSocket URL
+      const wsUrl =
+        window.location.protocol === "https:"
+          ? `wss://${window.location.host}/api/websocket`
+          : `ws://${window.location.host}/api/websocket`
+
+      const websocket = new WebSocket(wsUrl)
+
+      websocket.onopen = () => {
+        console.log("WebSocket подключен")
+        setConnectionStatus("connected")
+        setWs(websocket)
+
+        // Присоединяемся к комнате после подключения
+        const roomId = localStorage.getItem("mafia_room_id")
+        const playerId = localStorage.getItem("mafia_player_id")
+        const playerName = localStorage.getItem("mafia_player_name")
+
+        if (roomId && playerId && playerName) {
+          websocket.send(
+            JSON.stringify({
+              type: "joinRoom",
+              roomId,
+              playerId,
+              playerName,
+            }),
+          )
+        }
+      }
+
+      websocket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data)
+          handleWebSocketMessage(message)
+        } catch (error) {
+          console.error("Ошибка парсинга WebSocket сообщения:", error)
+        }
+      }
+
+      websocket.onclose = () => {
+        console.log("WebSocket отключен")
+        setConnectionStatus("disconnected")
+        setWs(null)
+
+        // Переподключение через 3 секунды
+        setTimeout(() => {
+          if (connectionStatus !== "connected") {
+            connectWebSocket()
+          }
+        }, 3000)
+      }
+
+      websocket.onerror = (error) => {
+        console.error("WebSocket ошибка:", error)
+        setConnectionStatus("disconnected")
+      }
+    } catch (error) {
+      console.error("Ошибка подключения WebSocket:", error)
+      setConnectionStatus("disconnected")
+    }
+  }
+
+  const handleWebSocketMessage = (message: any) => {
+    console.log("Получено WebSocket сообщение:", message)
+
+    switch (message.type) {
+      case "roomState":
+        if (message.data.players) {
+          setPlayers(message.data.players)
+        }
+        if (message.data.roomInfo) {
+          setRoomInfo((prev) => ({ ...prev, ...message.data.roomInfo }))
+        }
+        break
+
+      case "playerJoined":
+        addPlayer(message.data.player)
+        addSystemMessage(`${message.data.player.name} присоединился к игре`)
+        break
+
+      case "playerLeft":
+        removePlayer(message.data.playerId)
+        addSystemMessage(`Игрок покинул игру`)
+        break
+
+      case "playerReady":
+        updatePlayerReady(message.data.playerId, message.data.isReady)
+        break
+
+      case "chatMessage":
+        addChatMessage({
+          id: Date.now().toString(),
+          sender: message.data.sender,
+          message: message.data.message,
+          timestamp: message.data.timestamp,
+          type: "user",
+        })
+        break
+
+      case "gameStarted":
+        onGameStart()
+        break
+
+      case "error":
+        setError(message.data.message || "Произошла ошибка")
+        break
+    }
+  }
 
   const loadRoomData = () => {
     try {
@@ -55,33 +187,90 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       }
 
       setIsHost(hostStatus)
-      setRoomInfo((prev) => ({ ...prev, id: roomId }))
+      setRoomInfo((prev) => ({
+        ...prev,
+        id: roomId,
+        name: localStorage.getItem("mafia_room_name") || "Комната мафии",
+      }))
 
-      // Симулируем загрузку игроков (в реальном приложении это будет WebSocket)
-      const mockPlayers: Player[] = [
-        {
-          id: playerId,
-          name: playerName,
-          isHost: hostStatus,
-          isReady: false,
-        },
-      ]
+      // Добавляем текущего игрока в список
+      const currentPlayer: Player = {
+        id: playerId,
+        name: playerName,
+        isHost: hostStatus,
+        isReady: hostStatus, // Хост всегда готов
+      }
 
-      setPlayers(mockPlayers)
+      setPlayers([currentPlayer])
+
+      // Добавляем приветственное сообщение
+      addSystemMessage(`Добро пожаловать в комнату "${localStorage.getItem("mafia_room_name") || "Комната мафии"}"!`)
     } catch (error) {
       console.error("Error loading room data:", error)
       setError("Ошибка загрузки данных комнаты")
     }
   }
 
-  const handleToggleReady = () => {
-    setIsReady(!isReady)
-    // Обновляем статус готовности в списке игроков
+  const addPlayer = (player: Player) => {
+    setPlayers((prev) => {
+      // Проверяем, есть ли уже такой игрок
+      if (prev.some((p) => p.id === player.id)) {
+        return prev.map((p) => (p.id === player.id ? { ...p, ...player } : p))
+      }
+      return [...prev, player]
+    })
+  }
+
+  const removePlayer = (playerId: string) => {
+    setPlayers((prev) => prev.filter((p) => p.id !== playerId))
+  }
+
+  const updatePlayerReady = (playerId: string, isReady: boolean) => {
     setPlayers((prev) =>
-      prev.map((player) =>
-        player.id === localStorage.getItem("mafia_player_id") ? { ...player, isReady: !isReady } : player,
-      ),
+      prev.map((player) => {
+        if (player.id === playerId) {
+          return { ...player, isReady }
+        }
+        return player
+      }),
     )
+  }
+
+  const addChatMessage = (message: ChatMessage) => {
+    setChatMessages((prev) => [...prev, message])
+  }
+
+  const addSystemMessage = (message: string) => {
+    addChatMessage({
+      id: Date.now().toString(),
+      sender: "Система",
+      message,
+      timestamp: Date.now(),
+      type: "system",
+    })
+  }
+
+  const handleToggleReady = () => {
+    const newReadyState = !isReady
+    setIsReady(newReadyState)
+
+    // Отправляем сообщение через WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "playerReady",
+          roomId: roomInfo.id,
+          playerId: localStorage.getItem("mafia_player_id"),
+          isReady: newReadyState,
+        }),
+      )
+    }
+
+    // Обновляем локально
+    const playerId = localStorage.getItem("mafia_player_id")
+    if (playerId) {
+      updatePlayerReady(playerId, newReadyState)
+    }
   }
 
   const handleStartGame = () => {
@@ -94,24 +283,53 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     }
 
     setIsLoading(true)
-    // Симулируем запуск игры
+
+    // Отправляем сообщение о начале игры
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "startGame",
+          roomId: roomInfo.id,
+          playerId: localStorage.getItem("mafia_player_id"),
+        }),
+      )
+    }
+
+    // Имитируем запуск игры
     setTimeout(() => {
       onGameStart()
     }, 1000)
   }
 
   const handleLeaveRoom = () => {
+    // Отправляем сообщение о выходе
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: "leaveRoom",
+          roomId: roomInfo.id,
+          playerId: localStorage.getItem("mafia_player_id"),
+        }),
+      )
+    }
+
+    // Закрываем WebSocket
+    if (ws) {
+      ws.close()
+    }
+
     // Очищаем данные комнаты
     localStorage.removeItem("mafia_player_id")
     localStorage.removeItem("mafia_room_id")
     localStorage.removeItem("mafia_is_host")
     localStorage.removeItem("mafia_player_name")
+    localStorage.removeItem("mafia_room_name")
     onLeaveRoom()
   }
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomInfo.id)
-    // Можно добавить уведомление о копировании
+    addSystemMessage("Код комнаты скопирован в буфер обмена")
   }
 
   const canStartGame = () => {
@@ -119,9 +337,48 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     return isHost && readyPlayers.length >= roomInfo.minPlayers && players.length >= roomInfo.minPlayers
   }
 
+  const handleSendMessage = () => {
+    if (!chatMessage.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
+
+    const playerName = localStorage.getItem("mafia_player_name") || "Игрок"
+
+    // Отправляем сообщение через WebSocket
+    ws.send(
+      JSON.stringify({
+        type: "chatMessage",
+        roomId: roomInfo.id,
+        playerId: localStorage.getItem("mafia_player_id"),
+        data: {
+          sender: playerName,
+          message: chatMessage,
+          timestamp: Date.now(),
+        },
+      }),
+    )
+
+    // Добавляем сообщение локально
+    addChatMessage({
+      id: Date.now().toString(),
+      sender: playerName,
+      message: chatMessage,
+      timestamp: Date.now(),
+      type: "user",
+    })
+
+    // Очищаем поле ввода
+    setChatMessage("")
+  }
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      handleSendMessage()
+    }
+  }
+
   return (
     <div className="flex flex-col items-center justify-center min-h-screen py-8 px-4">
-      <div className="w-full max-w-4xl space-y-6">
+      <div className="w-full max-w-6xl space-y-6">
         {/* Заголовок лобби */}
         <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
           <div className="text-center">
@@ -131,15 +388,15 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             {/* Код комнаты */}
             <div className="flex items-center justify-center gap-2 mb-4">
               <span className="text-gray-300">Код комнаты:</span>
-              <Badge variant="outline" className="text-lg px-3 py-1">
+              <Badge variant="outline" className="text-lg px-3 py-1 text-white">
                 {roomInfo.id}
               </Badge>
               <Button size="sm" variant="ghost" onClick={copyRoomCode}>
-                <Copy className="w-4 h-4" />
+                <Copy className="w-4 h-4 text-white" />
               </Button>
             </div>
 
-            {/* Статус игроков */}
+            {/* Статус игроков и подключения */}
             <div className="flex items-center justify-center gap-4 text-sm text-gray-300">
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
@@ -151,17 +408,27 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 <UserCheck className="w-4 h-4" />
                 <span>{players.filter((p) => p.isReady || p.isHost).length} готовы</span>
               </div>
+              <Badge
+                variant={connectionStatus === "connected" ? "default" : "destructive"}
+                className={connectionStatus === "connected" ? "bg-green-600" : "bg-red-600"}
+              >
+                {connectionStatus === "connected"
+                  ? "Онлайн"
+                  : connectionStatus === "connecting"
+                    ? "Подключение..."
+                    : "Оффлайн"}
+              </Badge>
             </div>
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Список игроков */}
           <div className="lg:col-span-2">
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
               <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
                 <Users className="w-5 h-5" />
-                Игроки в лобби
+                Игроки в лобби ({players.length})
               </h2>
 
               <div className="space-y-3">
@@ -200,7 +467,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 ))}
 
                 {/* Пустые слоты */}
-                {Array.from({ length: roomInfo.maxPlayers - players.length }).map((_, index) => (
+                {Array.from({ length: Math.max(0, roomInfo.maxPlayers - players.length) }).map((_, index) => (
                   <div
                     key={`empty-${index}`}
                     className="flex items-center justify-between p-3 bg-gray-900/10 rounded-lg border border-gray-700 border-dashed"
@@ -217,15 +484,74 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             </Card>
           </div>
 
+          {/* Чат */}
+          <div className="lg:col-span-1">
+            <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 h-full">
+              <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5" />
+                Чат
+              </h2>
+
+              <div className="flex flex-col h-96">
+                {/* Сообщения */}
+                <div className="flex-1 overflow-y-auto mb-4 p-3 bg-gray-900/30 rounded-lg border border-gray-700">
+                  {chatMessages.length === 0 ? (
+                    <div className="text-gray-500 text-center py-4 text-sm">Сообщений пока нет</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {chatMessages.map((msg) => (
+                        <div key={msg.id} className="text-sm">
+                          {msg.type === "system" ? (
+                            <p className="text-gray-400 italic text-xs">{msg.message}</p>
+                          ) : (
+                            <div>
+                              <span className="font-bold text-white text-xs">{msg.sender}: </span>
+                              <span className="text-gray-300 text-xs">{msg.message}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Поле ввода */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Сообщение..."
+                    disabled={connectionStatus !== "connected"}
+                    className="flex-1 bg-gray-900/30 text-white placeholder:text-gray-500 rounded-lg border border-gray-700 px-3 py-2 text-sm"
+                  />
+                  <Button
+                    onClick={handleSendMessage}
+                    size="sm"
+                    disabled={!chatMessage.trim() || connectionStatus !== "connected"}
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+
           {/* Панель управления */}
-          <div className="space-y-6">
+          <div className="lg:col-span-1 space-y-6">
             {/* Кнопки действий */}
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
               <h3 className="text-lg font-bold text-white mb-4">Действия</h3>
 
               <div className="space-y-3">
                 {!isHost && (
-                  <Button onClick={handleToggleReady} variant={isReady ? "default" : "outline"} className="w-full">
+                  <Button
+                    onClick={handleToggleReady}
+                    variant={isReady ? "default" : "outline"}
+                    className="w-full"
+                    disabled={connectionStatus !== "connected"}
+                  >
                     {isReady ? "Отменить готовность" : "Готов к игре"}
                   </Button>
                 )}
@@ -234,7 +560,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                   <>
                     <Button
                       onClick={handleStartGame}
-                      disabled={!canStartGame() || isLoading}
+                      disabled={!canStartGame() || isLoading || connectionStatus !== "connected"}
                       variant="destructive"
                       className="w-full"
                     >
@@ -305,6 +631,12 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 <div className="flex justify-between">
                   <span>Тип комнаты:</span>
                   <span>{roomInfo.isPrivate ? "Приватная" : "Публичная"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Статус:</span>
+                  <span className={connectionStatus === "connected" ? "text-green-400" : "text-red-400"}>
+                    {connectionStatus === "connected" ? "Подключено" : "Отключено"}
+                  </span>
                 </div>
               </div>
             </Card>
