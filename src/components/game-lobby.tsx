@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Slider } from "@/components/ui/slider"
 import { useAuth } from "./auth-context"
-import { Copy, Users, Settings, Crown, MessageSquare, Send } from "lucide-react"
+import { Copy, Users, Settings, Crown, MessageSquare, Send, RefreshCw } from "lucide-react"
 
 interface GameLobbyProps {
   onGameStart: () => void
@@ -17,7 +17,7 @@ interface Player {
   id: string
   name: string
   isHost: boolean
-  avatar?: string
+  isConnected: boolean
 }
 
 interface ChatMessage {
@@ -28,198 +28,109 @@ interface ChatMessage {
   type: "user" | "system"
 }
 
+interface RoomData {
+  roomInfo: {
+    id: string
+    name: string
+    maxPlayers: number
+    minPlayers: number
+    isPrivate: boolean
+    status: string
+  }
+  players: Player[]
+  chatMessages: ChatMessage[]
+}
+
 const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   const { user } = useAuth()
-  const [players, setPlayers] = React.useState<Player[]>([])
-  const [roomInfo, setRoomInfo] = React.useState({
-    id: "",
-    name: "",
-    minPlayers: 4,
-    maxPlayers: 8,
-    isPrivate: false,
-  })
+  const [roomData, setRoomData] = React.useState<RoomData | null>(null)
   const [isHost, setIsHost] = React.useState(false)
   const [showSettings, setShowSettings] = React.useState(false)
   const [isLoading, setIsLoading] = React.useState(false)
   const [error, setError] = React.useState("")
   const [chatMessage, setChatMessage] = React.useState("")
-  const [chatMessages, setChatMessages] = React.useState<ChatMessage[]>([])
-  const [ws, setWs] = React.useState<WebSocket | null>(null)
+  const [isRefreshing, setIsRefreshing] = React.useState(false)
   const chatContainerRef = React.useRef<HTMLDivElement>(null)
+  const intervalRef = React.useRef<NodeJS.Timeout>()
 
   // Автопрокрутка чата
   React.useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
     }
-  }, [chatMessages])
+  }, [roomData?.chatMessages])
 
-  // Подключение к WebSocket
+  // Загрузка данных лобби
   React.useEffect(() => {
-    connectWebSocket()
-    loadRoomData()
+    loadLobbyData()
+
+    // Обновляем данные каждые 2 секунды
+    intervalRef.current = setInterval(() => {
+      loadLobbyData(true) // silent refresh
+    }, 2000)
 
     return () => {
-      if (ws) {
-        ws.close()
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
       }
     }
   }, [])
 
-  const connectWebSocket = () => {
+  const loadLobbyData = async (silent = false) => {
     try {
-      // Используем правильный WebSocket URL
-      const wsUrl =
-        window.location.protocol === "https:"
-          ? `wss://${window.location.host}/api/websocket`
-          : `ws://${window.location.host}/api/websocket`
-
-      const websocket = new WebSocket(wsUrl)
-
-      websocket.onopen = () => {
-        console.log("🔌 WebSocket подключен")
-        setWs(websocket)
-
-        // Присоединяемся к комнате после подключения
-        const roomId = localStorage.getItem("mafia_room_id")
-        const playerId = localStorage.getItem("mafia_player_id")
-        const playerName = localStorage.getItem("mafia_player_name")
-
-        if (roomId && playerId && playerName) {
-          console.log(`🎯 Присоединяемся к комнате ${roomId} как ${playerName}`)
-          websocket.send(
-            JSON.stringify({
-              type: "joinRoom",
-              roomId,
-              playerId,
-              playerName,
-            }),
-          )
-        }
+      if (!silent) {
+        setIsRefreshing(true)
       }
 
-      websocket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data)
-          handleWebSocketMessage(message)
-        } catch (error) {
-          console.error("❌ Ошибка парсинга WebSocket сообщения:", error)
-        }
-      }
-
-      websocket.onclose = () => {
-        console.log("🔌 WebSocket отключен")
-        setWs(null)
-
-        // Переподключение через 3 секунды
-        setTimeout(() => {
-          connectWebSocket()
-        }, 3000)
-      }
-
-      websocket.onerror = (error) => {
-        console.error("❌ WebSocket ошибка:", error)
-      }
-    } catch (error) {
-      console.error("❌ Ошибка подключения WebSocket:", error)
-    }
-  }
-
-  const handleWebSocketMessage = (message: any) => {
-    console.log("📨 Получено WebSocket сообщение:", message.type, message)
-
-    switch (message.type) {
-      case "roomState":
-        console.log("📊 Обновляем состояние комнаты:", message.data)
-        if (message.data.players) {
-          console.log(`👥 Игроки в комнате: ${message.data.players.length}`, message.data.players)
-          setPlayers(message.data.players)
-        }
-        if (message.data.roomInfo) {
-          setRoomInfo((prev) => ({ ...prev, ...message.data.roomInfo }))
-        }
-        if (message.data.chatMessages) {
-          setChatMessages(message.data.chatMessages)
-        }
-        break
-
-      case "chatMessage":
-        console.log("💬 Новое сообщение в чате:", message.data)
-        addChatMessage({
-          id: message.data.id || Date.now().toString(),
-          sender: message.data.sender,
-          message: message.data.message,
-          timestamp: message.data.timestamp,
-          type: message.data.type || "user",
-        })
-        break
-
-      case "gameStarted":
-        onGameStart()
-        break
-
-      case "error":
-        setError(message.data.message || "Произошла ошибка")
-        break
-    }
-  }
-
-  const loadRoomData = () => {
-    try {
       const roomId = localStorage.getItem("mafia_room_id")
       const playerId = localStorage.getItem("mafia_player_id")
-      const playerName = localStorage.getItem("mafia_player_name")
       const hostStatus = localStorage.getItem("mafia_is_host") === "true"
 
-      if (!roomId || !playerId || !playerName) {
+      if (!roomId || !playerId) {
         setError("Данные комнаты не найдены")
         return
       }
 
       setIsHost(hostStatus)
-      setRoomInfo((prev) => ({
-        ...prev,
-        id: roomId,
-        name: localStorage.getItem("mafia_room_name") || "Комната мафии",
-      }))
 
-      console.log(`🏠 Загружены данные комнаты: ${roomId}, игрок: ${playerName}, хост: ${hostStatus}`)
+      const response = await fetch(`/api/lobby?roomId=${roomId}&playerId=${playerId}`)
+      const data = await response.json()
+
+      if (data.success && data.data) {
+        console.log(`📊 Loaded lobby data:`, {
+          players: data.data.players.length,
+          messages: data.data.chatMessages.length,
+        })
+
+        setRoomData(data.data)
+        setError("")
+      } else {
+        console.error("❌ Failed to load lobby data:", data.error)
+        if (!silent) {
+          setError(data.error || "Ошибка загрузки данных лобби")
+        }
+      }
     } catch (error) {
-      console.error("❌ Error loading room data:", error)
-      setError("Ошибка загрузки данных комнаты")
+      console.error("❌ Error loading lobby data:", error)
+      if (!silent) {
+        setError("Ошибка соединения с сервером")
+      }
+    } finally {
+      if (!silent) {
+        setIsRefreshing(false)
+      }
     }
   }
 
-  const addChatMessage = (message: ChatMessage) => {
-    setChatMessages((prev) => {
-      // Проверяем, нет ли уже такого сообщения
-      if (prev.some((msg) => msg.id === message.id)) {
-        return prev
-      }
-      return [...prev, message]
-    })
-  }
-
   const handleStartGame = () => {
-    if (!isHost) return
+    if (!isHost || !roomData) return
 
-    if (players.length < roomInfo.minPlayers) {
-      setError(`Недостаточно игроков. Минимум: ${roomInfo.minPlayers}`)
+    if (roomData.players.length < roomData.roomInfo.minPlayers) {
+      setError(`Недостаточно игроков. Минимум: ${roomData.roomInfo.minPlayers}`)
       return
     }
 
     setIsLoading(true)
-
-    // Отправляем сообщение о начале игры
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({
-          type: "startGame",
-          roomId: roomInfo.id,
-          playerId: localStorage.getItem("mafia_player_id"),
-        }),
-      )
-    }
 
     // Имитируем запуск игры
     setTimeout(() => {
@@ -227,21 +138,18 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     }, 1000)
   }
 
-  const handleLeaveRoom = () => {
-    // Отправляем сообщение о выходе
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({
-          type: "leaveRoom",
-          roomId: roomInfo.id,
-          playerId: localStorage.getItem("mafia_player_id"),
-        }),
-      )
-    }
-
-    // Закрываем WebSocket
-    if (ws) {
-      ws.close()
+  const handleLeaveRoom = async () => {
+    try {
+      const playerId = localStorage.getItem("mafia_player_id")
+      if (playerId) {
+        await fetch("/api/rooms", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playerId }),
+        })
+      }
+    } catch (error) {
+      console.error("❌ Error leaving room:", error)
     }
 
     // Очищаем данные комнаты
@@ -254,42 +162,43 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   }
 
   const copyRoomCode = () => {
-    navigator.clipboard.writeText(roomInfo.id)
-    // Добавляем сообщение в чат локально
-    addChatMessage({
-      id: `local-${Date.now()}`,
-      sender: "Система",
-      message: "Код комнаты скопирован в буфер обмена",
-      timestamp: Date.now(),
-      type: "system",
-    })
+    if (roomData?.roomInfo.id) {
+      navigator.clipboard.writeText(roomData.roomInfo.id)
+      // Можно добавить уведомление
+    }
   }
 
-  const handleSendMessage = () => {
-    if (!chatMessage.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
+  const handleSendMessage = async () => {
+    if (!chatMessage.trim() || !roomData) return
 
-    const playerName = localStorage.getItem("mafia_player_name") || "Игрок"
-    const messageId = `msg-${Date.now()}-${Math.random()}`
+    try {
+      const roomId = localStorage.getItem("mafia_room_id")
+      const playerId = localStorage.getItem("mafia_player_id")
+      const playerName = localStorage.getItem("mafia_player_name") || "Игрок"
 
-    // Отправляем сообщение через WebSocket
-    ws.send(
-      JSON.stringify({
-        type: "chatMessage",
-        roomId: roomInfo.id,
-        playerId: localStorage.getItem("mafia_player_id"),
-        data: {
-          id: messageId,
+      const response = await fetch("/api/lobby", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomId,
+          playerId,
           sender: playerName,
           message: chatMessage,
-          timestamp: Date.now(),
-        },
-      }),
-    )
+        }),
+      })
 
-    // НЕ добавляем сообщение локально - оно придет через WebSocket
-
-    // Очищаем поле ввода
-    setChatMessage("")
+      const data = await response.json()
+      if (data.success) {
+        setChatMessage("")
+        // Обновляем данные лобби
+        loadLobbyData(true)
+      } else {
+        setError(data.error || "Ошибка отправки сообщения")
+      }
+    } catch (error) {
+      console.error("❌ Error sending message:", error)
+      setError("Ошибка отправки сообщения")
+    }
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -299,20 +208,43 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     }
   }
 
+  if (!roomData) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-red-500 mx-auto"></div>
+          <p className="mt-4 text-white">Загрузка лобби...</p>
+          {error && <p className="mt-2 text-red-400">{error}</p>}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col items-center justify-center min-h-screen py-8 px-4">
       <div className="w-full max-w-6xl space-y-6">
         {/* Заголовок лобби */}
         <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
           <div className="text-center">
-            <h1 className="text-3xl font-bold text-white mb-2">Лобби игры</h1>
-            <p className="text-gray-300 mb-4">{roomInfo.name || "Комната мафии"}</p>
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <h1 className="text-3xl font-bold text-white">Лобби игры</h1>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => loadLobbyData()}
+                disabled={isRefreshing}
+                className="text-gray-400 hover:text-white"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+            <p className="text-gray-300 mb-4">{roomData.roomInfo.name}</p>
 
             {/* Код комнаты */}
             <div className="flex items-center justify-center gap-2 mb-4">
               <span className="text-gray-300">Код комнаты:</span>
               <Badge variant="outline" className="text-lg px-3 py-1 text-white">
-                {roomInfo.id}
+                {roomData.roomInfo.id}
               </Badge>
               <Button size="sm" variant="ghost" onClick={copyRoomCode}>
                 <Copy className="w-4 h-4 text-white" />
@@ -323,8 +255,8 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             <div className="flex items-center justify-center gap-4 text-sm text-gray-300">
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
-                <span>
-                  {players.length}/{roomInfo.maxPlayers} игроков
+                <span className="font-bold text-green-400">
+                  {roomData.players.length}/{roomData.roomInfo.maxPlayers} игроков
                 </span>
               </div>
             </div>
@@ -337,11 +269,11 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800">
               <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
                 <Users className="w-5 h-5" />
-                Игроки в лобби ({players.length})
+                Игроки в лобби ({roomData.players.length})
               </h2>
 
               <div className="space-y-3">
-                {players.map((player) => (
+                {roomData.players.map((player) => (
                   <div
                     key={player.id}
                     className="flex items-center justify-between p-3 bg-gray-900/30 rounded-lg border border-gray-700"
@@ -354,6 +286,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                         <div className="flex items-center gap-2">
                           <span className="text-white font-medium">{player.name}</span>
                           {player.isHost && <Crown className="w-4 h-4 text-yellow-500" />}
+                          {!player.isConnected && <span className="text-xs text-red-400">(отключен)</span>}
                         </div>
                         <span className="text-sm text-gray-400">{player.isHost ? "Хост" : "Игрок"}</span>
                       </div>
@@ -362,19 +295,21 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 ))}
 
                 {/* Пустые слоты */}
-                {Array.from({ length: Math.max(0, roomInfo.maxPlayers - players.length) }).map((_, index) => (
-                  <div
-                    key={`empty-${index}`}
-                    className="flex items-center justify-between p-3 bg-gray-900/10 rounded-lg border border-gray-700 border-dashed"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
-                        <Users className="w-5 h-5 text-gray-500" />
+                {Array.from({ length: Math.max(0, roomData.roomInfo.maxPlayers - roomData.players.length) }).map(
+                  (_, index) => (
+                    <div
+                      key={`empty-${index}`}
+                      className="flex items-center justify-between p-3 bg-gray-900/10 rounded-lg border border-gray-700 border-dashed"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
+                          <Users className="w-5 h-5 text-gray-500" />
+                        </div>
+                        <span className="text-gray-500">Ожидание игрока...</span>
                       </div>
-                      <span className="text-gray-500">Ожидание игрока...</span>
                     </div>
-                  </div>
-                ))}
+                  ),
+                )}
               </div>
             </Card>
 
@@ -387,7 +322,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                   <>
                     <Button
                       onClick={handleStartGame}
-                      disabled={players.length < roomInfo.minPlayers || isLoading}
+                      disabled={roomData.players.length < roomData.roomInfo.minPlayers || isLoading}
                       variant="destructive"
                       className="w-full"
                     >
@@ -415,27 +350,21 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium mb-1 text-white">
-                      Минимум игроков: {roomInfo.minPlayers}
+                      Минимум игроков: {roomData.roomInfo.minPlayers}
                     </label>
-                    <Slider
-                      min={4}
-                      max={8}
-                      step={1}
-                      defaultValue={[roomInfo.minPlayers]}
-                      onValueChange={(value) => setRoomInfo((prev) => ({ ...prev, minPlayers: value[0] }))}
-                    />
+                    <Slider min={4} max={8} step={1} defaultValue={[roomData.roomInfo.minPlayers]} disabled />
                   </div>
 
                   <div>
                     <label className="block text-sm font-medium mb-1 text-white">
-                      Максимум игроков: {roomInfo.maxPlayers}
+                      Максимум игроков: {roomData.roomInfo.maxPlayers}
                     </label>
                     <Slider
-                      min={roomInfo.minPlayers}
+                      min={roomData.roomInfo.minPlayers}
                       max={10}
                       step={1}
-                      defaultValue={[roomInfo.maxPlayers]}
-                      onValueChange={(value) => setRoomInfo((prev) => ({ ...prev, maxPlayers: value[0] }))}
+                      defaultValue={[roomData.roomInfo.maxPlayers]}
+                      disabled
                     />
                   </div>
                 </div>
@@ -448,7 +377,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 h-full">
               <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
                 <MessageSquare className="w-5 h-5" />
-                Чат лобби
+                Чат лобби ({roomData.chatMessages.length})
               </h2>
 
               <div className="flex flex-col h-[500px]">
@@ -457,11 +386,11 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                   ref={chatContainerRef}
                   className="flex-1 overflow-y-auto mb-4 p-3 bg-gray-900/30 rounded-lg border border-gray-700"
                 >
-                  {chatMessages.length === 0 ? (
+                  {roomData.chatMessages.length === 0 ? (
                     <div className="text-gray-500 text-center py-4">Сообщений пока нет</div>
                   ) : (
                     <div className="space-y-2">
-                      {chatMessages.map((msg) => (
+                      {roomData.chatMessages.map((msg) => (
                         <div key={msg.id} className="text-sm">
                           {msg.type === "system" ? (
                             <p className="text-green-400 italic">🔔 {msg.message}</p>
@@ -469,6 +398,9 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                             <div>
                               <span className="font-bold text-white">{msg.sender}: </span>
                               <span className="text-gray-300">{msg.message}</span>
+                              <span className="text-xs text-gray-500 ml-2">
+                                {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              </span>
                             </div>
                           )}
                         </div>
@@ -486,6 +418,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                     onKeyPress={handleKeyPress}
                     placeholder="Введите сообщение..."
                     className="flex-1 bg-gray-900/30 text-white placeholder:text-gray-500 rounded-lg border border-gray-700 px-3 py-2"
+                    maxLength={200}
                   />
                   <Button onClick={handleSendMessage} disabled={!chatMessage.trim()}>
                     <Send className="w-4 h-4 mr-2" />
