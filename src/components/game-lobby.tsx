@@ -77,7 +77,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       const websocket = new WebSocket(wsUrl)
 
       websocket.onopen = () => {
-        console.log("WebSocket подключен")
+        console.log("🔌 WebSocket подключен")
         setWs(websocket)
 
         // Присоединяемся к комнате после подключения
@@ -86,6 +86,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         const playerName = localStorage.getItem("mafia_player_name")
 
         if (roomId && playerId && playerName) {
+          console.log(`🎯 Присоединяемся к комнате ${roomId} как ${playerName}`)
           websocket.send(
             JSON.stringify({
               type: "joinRoom",
@@ -102,12 +103,12 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
           const message = JSON.parse(event.data)
           handleWebSocketMessage(message)
         } catch (error) {
-          console.error("Ошибка парсинга WebSocket сообщения:", error)
+          console.error("❌ Ошибка парсинга WebSocket сообщения:", error)
         }
       }
 
       websocket.onclose = () => {
-        console.log("WebSocket отключен")
+        console.log("🔌 WebSocket отключен")
         setWs(null)
 
         // Переподключение через 3 секунды
@@ -117,19 +118,21 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       }
 
       websocket.onerror = (error) => {
-        console.error("WebSocket ошибка:", error)
+        console.error("❌ WebSocket ошибка:", error)
       }
     } catch (error) {
-      console.error("Ошибка подключения WebSocket:", error)
+      console.error("❌ Ошибка подключения WebSocket:", error)
     }
   }
 
   const handleWebSocketMessage = (message: any) => {
-    console.log("Получено WebSocket сообщение:", message)
+    console.log("📨 Получено WebSocket сообщение:", message.type, message)
 
     switch (message.type) {
       case "roomState":
+        console.log("📊 Обновляем состояние комнаты:", message.data)
         if (message.data.players) {
+          console.log(`👥 Игроки в комнате: ${message.data.players.length}`, message.data.players)
           setPlayers(message.data.players)
         }
         if (message.data.roomInfo) {
@@ -140,23 +143,14 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         }
         break
 
-      case "playerJoined":
-        addPlayer(message.data.player)
-        addSystemMessage(`${message.data.player.name} присоединился к игре`)
-        break
-
-      case "playerLeft":
-        removePlayer(message.data.playerId)
-        addSystemMessage(`Игрок покинул игру`)
-        break
-
       case "chatMessage":
+        console.log("💬 Новое сообщение в чате:", message.data)
         addChatMessage({
           id: message.data.id || Date.now().toString(),
           sender: message.data.sender,
           message: message.data.message,
           timestamp: message.data.timestamp,
-          type: "user",
+          type: message.data.type || "user",
         })
         break
 
@@ -189,48 +183,20 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         name: localStorage.getItem("mafia_room_name") || "Комната мафии",
       }))
 
-      // Добавляем текущего игрока в список
-      const currentPlayer: Player = {
-        id: playerId,
-        name: playerName,
-        isHost: hostStatus,
-      }
-
-      setPlayers([currentPlayer])
-
-      // Добавляем приветственное сообщение
-      addSystemMessage(`Добро пожаловать в комнату "${localStorage.getItem("mafia_room_name") || "Комната мафии"}"!`)
+      console.log(`🏠 Загружены данные комнаты: ${roomId}, игрок: ${playerName}, хост: ${hostStatus}`)
     } catch (error) {
-      console.error("Error loading room data:", error)
+      console.error("❌ Error loading room data:", error)
       setError("Ошибка загрузки данных комнаты")
     }
   }
 
-  const addPlayer = (player: Player) => {
-    setPlayers((prev) => {
-      // Проверяем, есть ли уже такой игрок
-      if (prev.some((p) => p.id === player.id)) {
-        return prev.map((p) => (p.id === player.id ? { ...p, ...player } : p))
-      }
-      return [...prev, player]
-    })
-  }
-
-  const removePlayer = (playerId: string) => {
-    setPlayers((prev) => prev.filter((p) => p.id !== playerId))
-  }
-
   const addChatMessage = (message: ChatMessage) => {
-    setChatMessages((prev) => [...prev, message])
-  }
-
-  const addSystemMessage = (message: string) => {
-    addChatMessage({
-      id: Date.now().toString(),
-      sender: "Система",
-      message,
-      timestamp: Date.now(),
-      type: "system",
+    setChatMessages((prev) => {
+      // Проверяем, нет ли уже такого сообщения
+      if (prev.some((msg) => msg.id === message.id)) {
+        return prev
+      }
+      return [...prev, message]
     })
   }
 
@@ -289,14 +255,21 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomInfo.id)
-    addSystemMessage("Код комнаты скопирован в буфер обмена")
+    // Добавляем сообщение в чат локально
+    addChatMessage({
+      id: `local-${Date.now()}`,
+      sender: "Система",
+      message: "Код комнаты скопирован в буфер обмена",
+      timestamp: Date.now(),
+      type: "system",
+    })
   }
 
   const handleSendMessage = () => {
     if (!chatMessage.trim() || !ws || ws.readyState !== WebSocket.OPEN) return
 
     const playerName = localStorage.getItem("mafia_player_name") || "Игрок"
-    const messageId = Date.now().toString()
+    const messageId = `msg-${Date.now()}-${Math.random()}`
 
     // Отправляем сообщение через WebSocket
     ws.send(
@@ -313,14 +286,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       }),
     )
 
-    // Добавляем сообщение локально
-    addChatMessage({
-      id: messageId,
-      sender: playerName,
-      message: chatMessage,
-      timestamp: Date.now(),
-      type: "user",
-    })
+    // НЕ добавляем сообщение локально - оно придет через WebSocket
 
     // Очищаем поле ввода
     setChatMessage("")
@@ -498,7 +464,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                       {chatMessages.map((msg) => (
                         <div key={msg.id} className="text-sm">
                           {msg.type === "system" ? (
-                            <p className="text-gray-400 italic">{msg.message}</p>
+                            <p className="text-green-400 italic">🔔 {msg.message}</p>
                           ) : (
                             <div>
                               <span className="font-bold text-white">{msg.sender}: </span>
