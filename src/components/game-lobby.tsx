@@ -4,9 +4,9 @@ import React from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Slider } from "@/components/ui/slider"
 import { useAuth } from "./auth-context"
-import { Copy, Users, Settings, Crown, MessageSquare, Send, RefreshCw } from "lucide-react"
+import { useGame } from "./game-context"
+import { Copy, Users, MessageSquare, Send, RefreshCw, Clock } from "lucide-react"
 
 interface GameLobbyProps {
   onGameStart: () => void
@@ -18,6 +18,8 @@ interface Player {
   name: string
   isHost: boolean
   isConnected: boolean
+  role?: string
+  isAlive: boolean
 }
 
 interface ChatMessage {
@@ -25,7 +27,7 @@ interface ChatMessage {
   sender: string
   message: string
   timestamp: number
-  type: "user" | "system"
+  type: "user" | "system" | "timer"
 }
 
 interface RoomData {
@@ -36,17 +38,18 @@ interface RoomData {
     minPlayers: number
     isPrivate: boolean
     status: string
+    autoStartTimer?: number
   }
   players: Player[]
   chatMessages: ChatMessage[]
+  gameState?: any
 }
 
 const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   const { user } = useAuth()
+  const { setState } = useGame()
   const [roomData, setRoomData] = React.useState<RoomData | null>(null)
   const [isHost, setIsHost] = React.useState(false)
-  const [showSettings, setShowSettings] = React.useState(false)
-  const [isLoading, setIsLoading] = React.useState(false)
   const [error, setError] = React.useState("")
   const [chatMessage, setChatMessage] = React.useState("")
   const [isRefreshing, setIsRefreshing] = React.useState(false)
@@ -64,10 +67,10 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   React.useEffect(() => {
     loadLobbyData()
 
-    // Обновляем данные каждые 2 секунды
+    // Обновляем данные каждые 1 секунду для таймера
     intervalRef.current = setInterval(() => {
-      loadLobbyData(true) // silent refresh
-    }, 2000)
+      loadLobbyData(true)
+    }, 1000)
 
     return () => {
       if (intervalRef.current) {
@@ -100,10 +103,42 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
         console.log(`📊 Loaded lobby data:`, {
           players: data.data.players.length,
           messages: data.data.chatMessages.length,
+          status: data.data.roomInfo.status,
+          autoStartTimer: data.data.roomInfo.autoStartTimer,
         })
 
         setRoomData(data.data)
         setError("")
+
+        // Если игра началась, переходим к игре
+        if (data.data.roomInfo.status === "playing" && data.data.gameState) {
+          console.log("🎮 Game started! Transitioning to game...")
+
+          // Обновляем состояние игры
+          setState((prevState) => ({
+            ...prevState,
+            ...data.data.gameState,
+            isOnline: true,
+            roomId: roomId,
+            clientId: playerId,
+            players: data.data.players.map((p: Player) => ({
+              id: p.id,
+              name: p.name,
+              role: p.role || "civilian",
+              isAlive: p.isAlive,
+              isBot: false,
+              avatar: "",
+              isHost: p.isHost,
+              clientId: p.id,
+              isSeduced: false,
+              canVote: true,
+              canUseAbility: true,
+              isConnected: p.isConnected,
+            })),
+          }))
+
+          onGameStart()
+        }
       } else {
         console.error("❌ Failed to load lobby data:", data.error)
         if (!silent) {
@@ -122,22 +157,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
     }
   }
 
-  const handleStartGame = () => {
-    if (!isHost || !roomData) return
-
-    if (roomData.players.length < roomData.roomInfo.minPlayers) {
-      setError(`Недостаточно игроков. Минимум: ${roomData.roomInfo.minPlayers}`)
-      return
-    }
-
-    setIsLoading(true)
-
-    // Имитируем запуск игры
-    setTimeout(() => {
-      onGameStart()
-    }, 1000)
-  }
-
   const handleLeaveRoom = async () => {
     try {
       const playerId = localStorage.getItem("mafia_player_id")
@@ -152,7 +171,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       console.error("❌ Error leaving room:", error)
     }
 
-    // Очищаем данные комнаты
     localStorage.removeItem("mafia_player_id")
     localStorage.removeItem("mafia_room_id")
     localStorage.removeItem("mafia_is_host")
@@ -164,7 +182,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
   const copyRoomCode = () => {
     if (roomData?.roomInfo.id) {
       navigator.clipboard.writeText(roomData.roomInfo.id)
-      // Можно добавить уведомление
     }
   }
 
@@ -190,7 +207,6 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
       const data = await response.json()
       if (data.success) {
         setChatMessage("")
-        // Обновляем данные лобби
         loadLobbyData(true)
       } else {
         setError(data.error || "Ошибка отправки сообщения")
@@ -251,7 +267,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
               </Button>
             </div>
 
-            {/* Статус игроков */}
+            {/* Статус игроков и таймер */}
             <div className="flex items-center justify-center gap-4 text-sm text-gray-300">
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
@@ -259,6 +275,14 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                   {roomData.players.length}/{roomData.roomInfo.maxPlayers} игроков
                 </span>
               </div>
+
+              {/* Таймер автозапуска */}
+              {roomData.roomInfo.autoStartTimer && roomData.roomInfo.autoStartTimer > 0 && (
+                <div className="flex items-center gap-1">
+                  <Clock className="w-4 h-4 text-orange-400" />
+                  <span className="font-bold text-orange-400">Запуск через {roomData.roomInfo.autoStartTimer}с</span>
+                </div>
+              )}
             </div>
           </div>
         </Card>
@@ -285,10 +309,14 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="text-white font-medium">{player.name}</span>
-                          {player.isHost && <Crown className="w-4 h-4 text-yellow-500" />}
+                          {player.isHost && (
+                            <Badge variant="secondary" size="sm">
+                              Хост
+                            </Badge>
+                          )}
                           {!player.isConnected && <span className="text-xs text-red-400">(отключен)</span>}
                         </div>
-                        <span className="text-sm text-gray-400">{player.isHost ? "Хост" : "Игрок"}</span>
+                        <span className="text-sm text-gray-400">{player.isHost ? "Создатель" : "Игрок"}</span>
                       </div>
                     </div>
                   </div>
@@ -315,61 +343,35 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
 
             {/* Панель управления */}
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 mt-6">
-              <h3 className="text-lg font-bold text-white mb-4">Действия</h3>
+              <h3 className="text-lg font-bold text-white mb-4">Информация</h3>
 
-              <div className="space-y-3">
-                {isHost && (
-                  <>
-                    <Button
-                      onClick={handleStartGame}
-                      disabled={roomData.players.length < roomData.roomInfo.minPlayers || isLoading}
-                      variant="destructive"
-                      className="w-full"
-                    >
-                      {isLoading ? "Запуск..." : "Начать игру"}
-                    </Button>
-
-                    <Button onClick={() => setShowSettings(!showSettings)} variant="outline" className="w-full">
-                      <Settings className="w-4 h-4 mr-2" />
-                      Настройки
-                    </Button>
-                  </>
-                )}
-
-                <Button onClick={handleLeaveRoom} variant="ghost" className="w-full text-gray-300 hover:text-white">
-                  Покинуть комнату
-                </Button>
-              </div>
-            </Card>
-
-            {/* Настройки (только для хоста) */}
-            {isHost && showSettings && (
-              <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 mt-6">
-                <h3 className="text-lg font-bold text-white mb-4">Настройки игры</h3>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-1 text-white">
-                      Минимум игроков: {roomData.roomInfo.minPlayers}
-                    </label>
-                    <Slider min={4} max={8} step={1} defaultValue={[roomData.roomInfo.minPlayers]} disabled />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium mb-1 text-white">
-                      Максимум игроков: {roomData.roomInfo.maxPlayers}
-                    </label>
-                    <Slider
-                      min={roomData.roomInfo.minPlayers}
-                      max={10}
-                      step={1}
-                      defaultValue={[roomData.roomInfo.maxPlayers]}
-                      disabled
-                    />
-                  </div>
+              <div className="space-y-3 text-sm text-gray-300">
+                <div className="flex justify-between">
+                  <span>Минимум игроков:</span>
+                  <span className="text-white">{roomData.roomInfo.minPlayers}</span>
                 </div>
-              </Card>
-            )}
+                <div className="flex justify-between">
+                  <span>Максимум игроков:</span>
+                  <span className="text-white">{roomData.roomInfo.maxPlayers}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Статус:</span>
+                  <Badge variant={roomData.roomInfo.status === "waiting" ? "secondary" : "destructive"}>
+                    {roomData.roomInfo.status === "waiting" ? "Ожидание" : "В игре"}
+                  </Badge>
+                </div>
+
+                {roomData.players.length >= roomData.roomInfo.minPlayers && (
+                  <div className="mt-4 p-3 bg-orange-900/20 rounded-lg border border-orange-800">
+                    <p className="text-orange-400 text-center font-medium">⏰ Игра начнется автоматически!</p>
+                  </div>
+                )}
+              </div>
+
+              <Button onClick={handleLeaveRoom} variant="ghost" className="w-full mt-4 text-gray-300 hover:text-white">
+                Покинуть комнату
+              </Button>
+            </Card>
           </div>
 
           {/* Чат */}
@@ -394,6 +396,8 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                         <div key={msg.id} className="text-sm">
                           {msg.type === "system" ? (
                             <p className="text-green-400 italic">🔔 {msg.message}</p>
+                          ) : msg.type === "timer" ? (
+                            <p className="text-orange-400 italic font-bold">⏰ {msg.message}</p>
                           ) : (
                             <div>
                               <span className="font-bold text-white">{msg.sender}: </span>

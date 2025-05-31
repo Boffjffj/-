@@ -22,6 +22,8 @@ export async function GET(request: NextRequest) {
     console.log(`📤 Returning lobby data for room ${roomId}:`, {
       playersCount: roomData.players.length,
       messagesCount: roomData.chatMessages.length,
+      status: roomData.roomInfo.status,
+      autoStartTimer: roomData.roomInfo.autoStartTimer,
     })
 
     return NextResponse.json({
