@@ -254,11 +254,11 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                 <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
               </Button>
             </div>
-            <p className="text-gray-300 mb-4">{roomData.roomInfo.name}</p>
+            <p className="text-white mb-4">{roomData.roomInfo.name}</p>
 
             {/* Код комнаты */}
             <div className="flex items-center justify-center gap-2 mb-4">
-              <span className="text-gray-300">Код комнаты:</span>
+              <span className="text-white">Код комнаты:</span>
               <Badge variant="outline" className="text-lg px-3 py-1 text-white">
                 {roomData.roomInfo.id}
               </Badge>
@@ -268,7 +268,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             </div>
 
             {/* Статус игроков и таймер */}
-            <div className="flex items-center justify-center gap-4 text-sm text-gray-300">
+            <div className="flex items-center justify-center gap-4 text-sm text-white">
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
                 <span className="font-bold text-green-400">
@@ -314,9 +314,8 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
                               Хост
                             </Badge>
                           )}
-                          {!player.isConnected && <span className="text-xs text-red-400">(отключен)</span>}
                         </div>
-                        <span className="text-sm text-gray-400">{player.isHost ? "Создатель" : "Игрок"}</span>
+                        <span className="text-sm text-gray-100">{player.isHost ? "Создатель" : "Игрок"}</span>
                       </div>
                     </div>
                   </div>
@@ -345,7 +344,7 @@ const GameLobby: React.FC<GameLobbyProps> = ({ onGameStart, onLeaveRoom }) => {
             <Card className="p-6 bg-black/50 backdrop-blur-sm border border-gray-800 mt-6">
               <h3 className="text-lg font-bold text-white mb-4">Информация</h3>
 
-              <div className="space-y-3 text-sm text-gray-300">
+              <div className="space-y-3 text-sm text-white">
                 <div className="flex justify-between">
                   <span>Минимум игроков:</span>
                   <span className="text-white">{roomData.roomInfo.minPlayers}</span>

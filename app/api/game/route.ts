@@ -132,7 +132,6 @@ export async function GET(request: NextRequest) {
                     id: p.id,
                     name: p.name,
                     isHost: p.isHost,
-                    isConnected: Date.now() - p.lastSeen < 10000,
                   }
                 : null
             })
@@ -176,7 +175,6 @@ export async function GET(request: NextRequest) {
               id: p.id,
               name: p.name,
               isHost: p.isHost,
-              isConnected: Date.now() - p.lastSeen < 10000,
             }
           : null
       })

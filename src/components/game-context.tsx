@@ -99,6 +99,8 @@ interface GameContextType {
   setLoverPair: (player1Id: string, player2Id: string) => void
   loverSeduce: (playerId: string) => void
   donCheck: (playerId: string) => void
+  // Добавляем функцию для принудительной синхронизации с сервером
+  syncGameState: () => Promise<void>
 }
 
 // Создание контекста
@@ -1261,6 +1263,27 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [])
 
+  // Добавляем функцию для принудительной синхронизации с сервером
+  const syncGameState = React.useCallback(async () => {
+    if (!state.isOnline || !state.roomId || !state.clientId) return
+
+    try {
+      const response = await fetch(`/api/game?roomId=${state.roomId}&playerId=${state.clientId}`)
+      const data = await response.json()
+
+      if (data.success && data.room && data.room.gameState) {
+        setState((prevState) => ({
+          ...prevState,
+          ...data.room.gameState,
+          players: data.room.gameState.players || prevState.players,
+        }))
+      }
+    } catch (error) {
+      console.error("Error syncing game state:", error)
+    }
+  }, [state.isOnline, state.roomId, state.clientId])
+
+  // Добавляем syncGameState в возвращаемый объект value:
   const value = React.useMemo(
     () => ({
       state,
@@ -1279,6 +1302,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoverPair,
       loverSeduce,
       donCheck,
+      syncGameState, // Добавляем новую функцию
     }),
     [
       state,
@@ -1297,6 +1321,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoverPair,
       loverSeduce,
       donCheck,
+      syncGameState, // Добавляем новую функцию
     ],
   )
 

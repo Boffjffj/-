@@ -37,7 +37,7 @@ export const OnlineProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } catch (error) {
         console.error("Heartbeat failed:", error)
       }
-    }, 5000) // каждые 5 секунд
+    }, 1000) // каждую секунду
 
     return () => clearInterval(interval)
   }, [playerId])

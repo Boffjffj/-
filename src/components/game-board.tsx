@@ -188,6 +188,8 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
         setState((prev) => ({
           ...prev,
           ...data.room.gameState,
+          // Принудительно обновляем игроков
+          players: data.room.gameState.players || prev.players,
         }))
       }
     } catch (error) {
@@ -196,6 +198,17 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
       setIsUpdating(false)
     }
   }
+
+  // Добавляем автоматическую синхронизацию каждую секунду
+  React.useEffect(() => {
+    if (state.isOnline) {
+      const syncInterval = setInterval(() => {
+        updateGameState()
+      }, 1000)
+
+      return () => clearInterval(syncInterval)
+    }
+  }, [state.isOnline])
 
   // Прокрутка чата вниз при новых сообщениях
   React.useEffect(() => {
@@ -476,7 +489,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                 : "В процессе"}
             </Badge>
           </div>
-          <p className="text-gray-300">{phaseInfo.description}</p>
+          <p className="text-sm text-white">{phaseInfo.description}</p>
 
           {/* Индикатор таймера */}
           {state.timer !== null && (
@@ -554,7 +567,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                 <p className={`text-${getRoleColor(playerRole.role)}-200 font-medium`}>{playerRole.name}</p>
               </div>
             </div>
-            <p className="text-sm text-gray-300">{playerRole.description}</p>
+            <p className="text-sm text-white">{playerRole.description}</p>
 
             {/* Дополнительная информация для специальных ролей */}
             {(playerRole.role === "sheriff" || playerRole.role === "don") &&
@@ -564,7 +577,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                   {Object.entries(state.checkedPlayers).map(([playerId, role]) => {
                     const player = state.players.find((p) => p.id === Number(playerId))
                     return (
-                      <p key={playerId} className="text-xs text-gray-300">
+                      <p key={playerId} className="text-xs text-white">
                         {player?.name}:{" "}
                         {playerRole.role === "don" && role === "sheriff" ? "Мирный житель" : getRoleName(role)}
                       </p>
@@ -602,7 +615,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                 <SkullIcon />
               </div>
               <h3 className="font-semibold text-red-400 mb-2">Вы мертвы</h3>
-              <p className="text-sm text-gray-300 mb-3">
+              <p className="text-sm text-white mb-3">
                 Вы можете наблюдать за игрой, но не можете участвовать в голосовании или отправлять сообщения.
               </p>
               <Button color="danger" variant="flat" size="sm" onPress={handleLeaveRoom} startContent={<ExitIcon />}>
@@ -617,7 +630,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
           <Card className="p-4 bg-orange-900/20 backdrop-blur-sm border border-orange-800">
             <div className="text-center">
               <h3 className="font-semibold text-orange-400 mb-2">Ваше последнее слово</h3>
-              <p className="text-sm text-gray-300 mb-3">
+              <p className="text-sm text-white mb-3">
                 У вас есть 30 секунд, чтобы сказать последнее слово перед исключением из игры.
               </p>
             </div>
@@ -665,7 +678,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                   <div key={msg.id} className={`flex ${msg.isSystem ? "justify-center" : "gap-2"}`}>
                     {msg.isSystem ? (
                       <div className="bg-gray-800/50 rounded-lg py-2 px-3 max-w-[90%] border border-gray-700">
-                        <p className="text-sm text-gray-300 text-center">{msg.text}</p>
+                        <p className="text-sm text-white text-center">{msg.text}</p>
                       </div>
                     ) : (
                       <>
@@ -682,7 +695,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                               {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                             </span>
                           </div>
-                          <p className="text-sm mt-1 text-gray-200">{msg.text}</p>
+                          <p className="text-sm mt-1 text-white">{msg.text}</p>
                         </div>
                       </>
                     )}
@@ -785,12 +798,11 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                       </div>
                       <div className="flex items-center gap-1 text-xs text-gray-400">
                         {!isAlive && state.phase !== "last-word" && <span className="text-red-400">Мёртв</span>}
-                        {hasVoted && state.phase === "voting" && <span className="text-gray-300">Проголосовал</span>}
+                        {hasVoted && state.phase === "voting" && <span className="text-white">Проголосовал</span>}
                         {isProtected && <span className="text-success-400">Защищен</span>}
                         {isChecked && <span className="text-warning-400">Проверен</span>}
                         {isSeduced && <span className="text-secondary-400">Соблазнен 💋</span>}
                         {!player.canVote && isAlive && <span className="text-gray-500">Не может голосовать</span>}
-                        {!player.isConnected && <span className="text-gray-500">Отключен</span>}
                       </div>
                     </div>
                   </div>
@@ -904,7 +916,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-primary-200">Мирный житель</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Обычный житель города. Днём участвует в обсуждении и голосовании. Цель - вычислить и устранить
                         всех членов мафии.
                       </p>
@@ -921,7 +933,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-danger-200">Мафия</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Член преступной группировки. Знает других членов мафии. Каждую ночь мафия выбирает одну жертву.
                         Цель - устранить всех мирных жителей.
                       </p>
@@ -938,7 +950,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-danger-200">Дон мафии</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Глава мафии. Имеет те же способности, что и обычная мафия, но шериф видит его как мирного
                         жителя. Может проверять игроков ночью.
                       </p>
@@ -955,7 +967,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-warning-200">Шериф</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Представитель закона. Каждую ночь может проверить одного игрока и узнать его роль. Цель - помочь
                         мирным жителям вычислить мафию.
                       </p>
@@ -972,7 +984,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-success-200">Доктор</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Городской врач. Каждую ночь может защитить одного игрока от убийства мафии. Не может защищать
                         одного и того же игрока две ночи подряд.
                       </p>
@@ -989,7 +1001,7 @@ export const GameBoard: React.FC<GameBoardProps> = ({ onLeaveRoom }) => {
                     </div>
                     <div>
                       <h4 className="font-semibold text-secondary-200">Любовница</h4>
-                      <p className="text-sm text-gray-300">
+                      <p className="text-sm text-white">
                         Каждую ночь может соблазнить одного игрока. Соблазненный игрок теряет право голоса на следующий
                         день и не может использовать специальные способности следующей ночью.
                       </p>
