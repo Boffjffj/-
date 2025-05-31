@@ -78,25 +78,37 @@ class GameServer {
     }
 
     this.rooms.set(roomId, room)
-    console.log(`Создана комната ${roomId}: ${name}`)
+    console.log(`✅ Создана комната ${roomId}: ${name}`)
     return roomId
   }
 
   joinRoom(roomId: string, playerId: string, playerName: string, ws: WebSocket, password?: string): boolean {
     const room = this.rooms.get(roomId)
     if (!room) {
-      console.log(`Комната ${roomId} не найдена`)
+      console.log(`❌ Комната ${roomId} не найдена`)
       return false
     }
 
     if (room.isPrivate && room.password !== password) {
-      console.log(`Неверный пароль для комнаты ${roomId}`)
+      console.log(`❌ Неверный пароль для комнаты ${roomId}`)
       return false
     }
 
     if (room.players.size >= room.maxPlayers) {
-      console.log(`Комната ${roomId} переполнена`)
+      console.log(`❌ Комната ${roomId} переполнена`)
       return false
+    }
+
+    // Проверяем, не подключен ли уже этот игрок
+    if (room.players.has(playerId)) {
+      console.log(`⚠️ Игрок ${playerName} уже в комнате ${roomId}, обновляем WebSocket`)
+      const existingPlayer = room.players.get(playerId)!
+      existingPlayer.ws = ws
+      this.connections.set(ws, { playerId, roomId })
+
+      // Отправляем текущее состояние переподключившемуся игроку
+      this.sendRoomState(ws, roomId)
+      return true
     }
 
     const isHost = room.players.size === 0 || playerId === room.hostId
@@ -109,10 +121,11 @@ class GameServer {
       ws,
     }
 
+    // Добавляем игрока в комнату
     room.players.set(playerId, player)
     this.connections.set(ws, { playerId, roomId })
 
-    console.log(`Игрок ${playerName} присоединился к комнате ${roomId}`)
+    console.log(`✅ Игрок ${playerName} присоединился к комнате ${roomId}. Всего игроков: ${room.players.size}`)
 
     // Добавляем системное сообщение
     const systemMessage: ChatMessage = {
@@ -124,14 +137,19 @@ class GameServer {
     }
     room.chatMessages.push(systemMessage)
 
-    // Уведомляем всех в комнате о новом игроке
-    this.broadcastToRoom(roomId, {
+    // ВАЖНО: Сначала отправляем состояние новому игроку
+    this.sendRoomState(ws, roomId)
+
+    // Затем уведомляем ВСЕХ остальных игроков о новом участнике
+    this.broadcastToRoomExcept(roomId, playerId, {
       type: "playerJoined",
       data: { player: this.playerToJSON(player) },
     })
 
-    // Отправляем текущее состояние комнаты новому игроку
-    this.sendRoomState(ws, roomId)
+    // И отправляем обновленное состояние ВСЕМ игрокам в комнате
+    setTimeout(() => {
+      this.broadcastRoomState(roomId)
+    }, 100)
 
     return true
   }
@@ -143,44 +161,47 @@ class GameServer {
     if (!room) return
 
     const player = room.players.get(playerId)
+    if (!player) return
+
     room.players.delete(playerId)
 
-    console.log(`Игрок ${player?.name || playerId} покинул комнату ${roomId}`)
+    console.log(`❌ Игрок ${player.name} покинул комнату ${roomId}. Осталось игроков: ${room.players.size}`)
 
     // Если комната пустая, удаляем её
     if (room.players.size === 0) {
       this.rooms.delete(roomId)
-      console.log(`Комната ${roomId} удалена (пустая)`)
-    } else {
-      // Если хост ушел, назначаем нового
-      if (player?.isHost) {
-        const newHost = Array.from(room.players.values())[0]
-        if (newHost) {
-          newHost.isHost = true
-          room.hostId = newHost.id
-          console.log(`Новый хост комнаты ${roomId}: ${newHost.name}`)
-        }
-      }
-
-      // Добавляем системное сообщение
-      const systemMessage: ChatMessage = {
-        id: Date.now().toString(),
-        sender: "Система",
-        message: `${player?.name || "Игрок"} покинул игру`,
-        timestamp: Date.now(),
-        type: "system",
-      }
-      room.chatMessages.push(systemMessage)
-
-      // Уведомляем остальных
-      this.broadcastToRoom(roomId, {
-        type: "playerLeft",
-        data: { playerId },
-      })
-
-      // Отправляем обновленное состояние
-      this.broadcastRoomState(roomId)
+      console.log(`🗑️ Комната ${roomId} удалена (пустая)`)
+      return
     }
+
+    // Если хост ушел, назначаем нового
+    if (player.isHost) {
+      const newHost = Array.from(room.players.values())[0]
+      if (newHost) {
+        newHost.isHost = true
+        room.hostId = newHost.id
+        console.log(`👑 Новый хост комнаты ${roomId}: ${newHost.name}`)
+      }
+    }
+
+    // Добавляем системное сообщение
+    const systemMessage: ChatMessage = {
+      id: Date.now().toString(),
+      sender: "Система",
+      message: `${player.name} покинул игру`,
+      timestamp: Date.now(),
+      type: "system",
+    }
+    room.chatMessages.push(systemMessage)
+
+    // Уведомляем всех остальных игроков
+    this.broadcastToRoom(roomId, {
+      type: "playerLeft",
+      data: { playerId },
+    })
+
+    // Отправляем обновленное состояние всем
+    this.broadcastRoomState(roomId)
   }
 
   addChatMessage(roomId: string, sender: string, message: string, messageId: string) {
@@ -196,13 +217,25 @@ class GameServer {
     }
 
     room.chatMessages.push(chatMessage)
-    console.log(`Сообщение в комнате ${roomId} от ${sender}: ${message}`)
+    console.log(`💬 Сообщение в комнате ${roomId} от ${sender}: ${message}`)
 
-    // Рассылаем сообщение всем в комнате
-    this.broadcastToRoom(roomId, {
+    // Рассылаем сообщение всем в комнате КРОМЕ отправителя
+    this.broadcastToRoomExcept(roomId, this.getPlayerIdBySender(roomId, sender), {
       type: "chatMessage",
       data: chatMessage,
     })
+  }
+
+  getPlayerIdBySender(roomId: string, senderName: string): string | null {
+    const room = this.rooms.get(roomId)
+    if (!room) return null
+
+    for (const [playerId, player] of room.players) {
+      if (player.name === senderName) {
+        return playerId
+      }
+    }
+    return null
   }
 
   startGame(roomId: string, hostId: string) {
@@ -212,7 +245,7 @@ class GameServer {
     if (room.players.size < room.minPlayers) return
 
     room.status = "playing"
-    console.log(`Игра в комнате ${roomId} началась`)
+    console.log(`🎮 Игра в комнате ${roomId} началась`)
 
     // Уведомляем всех о начале игры
     this.broadcastToRoom(roomId, {
@@ -223,7 +256,7 @@ class GameServer {
 
   sendRoomState(ws: WebSocket, roomId: string) {
     const room = this.rooms.get(roomId)
-    if (!room) return
+    if (!room || ws.readyState !== WebSocket.OPEN) return
 
     const roomState = {
       roomInfo: {
@@ -238,6 +271,8 @@ class GameServer {
       chatMessages: room.chatMessages,
     }
 
+    console.log(`📤 Отправляем состояние комнаты ${roomId}. Игроков: ${roomState.players.length}`)
+
     ws.send(
       JSON.stringify({
         type: "roomState",
@@ -250,9 +285,13 @@ class GameServer {
     const room = this.rooms.get(roomId)
     if (!room) return
 
-    room.players.forEach((player) => {
+    console.log(`📡 Рассылаем состояние комнаты ${roomId} всем игрокам (${room.players.size} игроков)`)
+
+    room.players.forEach((player, playerId) => {
       if (player.ws && player.ws.readyState === WebSocket.OPEN) {
         this.sendRoomState(player.ws, roomId)
+      } else {
+        console.log(`⚠️ WebSocket игрока ${player.name} не активен`)
       }
     })
   }
@@ -261,8 +300,23 @@ class GameServer {
     const room = this.rooms.get(roomId)
     if (!room) return
 
+    console.log(`📡 Рассылаем сообщение типа ${message.type} в комнату ${roomId}`)
+
     room.players.forEach((player) => {
       if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+        player.ws.send(JSON.stringify(message))
+      }
+    })
+  }
+
+  broadcastToRoomExcept(roomId: string, excludePlayerId: string | null, message: any) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    console.log(`📡 Рассылаем сообщение типа ${message.type} в комнату ${roomId} (кроме ${excludePlayerId})`)
+
+    room.players.forEach((player, playerId) => {
+      if (playerId !== excludePlayerId && player.ws && player.ws.readyState === WebSocket.OPEN) {
         player.ws.send(JSON.stringify(message))
       }
     })
@@ -292,14 +346,14 @@ class GameServer {
   }
 
   handleConnection(ws: WebSocket) {
-    console.log("Новое WebSocket подключение")
+    console.log("🔌 Новое WebSocket подключение")
 
     ws.on("message", (data: string) => {
       try {
         const message: GameMessage = JSON.parse(data)
         this.handleMessage(ws, message)
       } catch (error) {
-        console.error("Ошибка парсинга сообщения:", error)
+        console.error("❌ Ошибка парсинга сообщения:", error)
         ws.send(
           JSON.stringify({
             type: "error",
@@ -310,7 +364,7 @@ class GameServer {
     })
 
     ws.on("close", () => {
-      console.log("WebSocket подключение закрыто")
+      console.log("🔌 WebSocket подключение закрыто")
       const connection = this.connections.get(ws)
       if (connection) {
         this.leaveRoom(connection.playerId, connection.roomId)
@@ -319,12 +373,16 @@ class GameServer {
     })
 
     ws.on("error", (error) => {
-      console.error("WebSocket ошибка:", error)
+      console.error("❌ WebSocket ошибка:", error)
     })
   }
 
   private handleMessage(ws: WebSocket, message: GameMessage) {
-    console.log("Получено сообщение:", message.type, message)
+    console.log(`📨 Получено сообщение: ${message.type}`, {
+      roomId: message.roomId,
+      playerId: message.playerId,
+      playerName: message.playerName,
+    })
 
     switch (message.type) {
       case "joinRoom":
@@ -371,7 +429,7 @@ class GameServer {
         break
 
       default:
-        console.log("Неизвестный тип сообщения:", message.type)
+        console.log("❓ Неизвестный тип сообщения:", message.type)
     }
   }
 }
